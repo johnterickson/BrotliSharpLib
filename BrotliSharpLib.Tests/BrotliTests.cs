@@ -1,8 +1,11 @@
 ﻿using NUnit.Framework;
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace BrotliSharpLib.Tests
 {
@@ -61,6 +64,8 @@ namespace BrotliSharpLib.Tests
 
         private static readonly List<string> CompressTestFiles = new List<string>
         {
+            "empty.txt",
+            "hello.txt",
             "alice29.txt",
             "asyoulik.txt",
             "lcet10.txt",
@@ -88,11 +93,15 @@ namespace BrotliSharpLib.Tests
                 Assert.AreEqual(original[i], decompressed[i], "Decompressed byte-mismatch detected (" + fileName + ")");
         }
 
+        // git messes with line endings of the test files, so normalize before comparing
+        private static byte[] NormalizeLineEndings(byte[] bytes) =>
+            Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(bytes).Replace("\r\n", "\n"));
+
         [Test, Order(1)]
         public void Decompress()
         {
             // Run tests on data
-            foreach (var kvp in DecompressTestFiles)
+            Parallel.ForEach(DecompressTestFiles, kvp =>
             {
                 var compressedFilePath = Path.Combine(TestdataDir, kvp.Key);
                 var originalFilePath = Path.Combine(TestdataDir, kvp.Value);
@@ -106,15 +115,22 @@ namespace BrotliSharpLib.Tests
 
                 // Compare the decompressed version with the original
                 var original = File.ReadAllBytes(originalFilePath);
+
+                if (originalFilePath.EndsWith(".txt"))
+                {
+                    original = NormalizeLineEndings(original);
+                    decompressed = NormalizeLineEndings(decompressed);
+                }
+
                 CompareBuffers(original, decompressed, kvp.Key + " --> " + kvp.Value);
-            }
+            });
         }
 
         [Test, Order(2)]
         public void DecompressViaStream()
         {
             // Run tests on data
-            foreach (var kvp in DecompressTestFiles)
+            Parallel.ForEach(DecompressTestFiles, kvp =>
             {
                 var compressedFilePath = Path.Combine(TestdataDir, kvp.Key);
                 var originalFilePath = Path.Combine(TestdataDir, kvp.Value);
@@ -138,9 +154,17 @@ namespace BrotliSharpLib.Tests
 
                     // Compare the decompressed version with the original
                     var original = File.ReadAllBytes(originalFilePath);
-                    CompareBuffers(original, ms.ToArray(), kvp.Key + " --> " + kvp.Value);
+                    var decompressed = ms.ToArray();
+
+                    if (originalFilePath.EndsWith(".txt"))
+                    {
+                        original = NormalizeLineEndings(original);
+                        decompressed = NormalizeLineEndings(decompressed);
+                    }
+
+                    CompareBuffers(original, decompressed, kvp.Key + " --> " + kvp.Value);
                 }
-            }
+            });
         }
 
         private static readonly int[] CompressQualities = { 1, 6, 9, 11 };
@@ -154,23 +178,46 @@ namespace BrotliSharpLib.Tests
                 var filePath = Path.Combine(TestdataDir, file);
                 Assert.IsTrue(File.Exists(filePath), "Unable to find the test file: " + file);
 
-                foreach (var quality in CompressQualities)
+                var original = File.ReadAllBytes(filePath);
+
+                Parallel.ForEach(
+                    CompressQualities,
+                    //new ParallelOptions { MaxDegreeOfParallelism = 1 },
+                    quality =>
                 {
                     // Compress using the current quality
-                    var original = File.ReadAllBytes(filePath);
                     var compressed = Brotli.CompressBuffer(original, 0, original.Length, quality);
 
-                    // Decompress and verify with original
+                    //Decompress and verify with original
                     try
                     {
-                        var decompressed = Brotli.DecompressBuffer(compressed, 0, compressed.Length);
+                        byte[] decompressed = Brotli.DecompressBuffer(compressed, 0, compressed.Length);
                         CompareBuffers(original, decompressed, file);
                     }
                     catch (Exception e)
                     {
                         throw new Exception("Decompress failed with compressed buffer quality " + quality + " for " + file, e);
                     }
-                }
+
+                    try
+                    {
+                        if (BrotliBlock.TryExtractBareByteAlignedMetaBlock(compressed, out byte[] byteAlignedBareBlock))
+                        {
+                            var ms = new MemoryStream();
+                            ms.Write(BrotliBlock.StartBlockBytes, 0, BrotliBlock.StartBlockBytes.Length);
+                            ms.Write(byteAlignedBareBlock, 0, byteAlignedBareBlock.Length);
+                            ms.Write(BrotliBlock.EndBlockBytes, 0, BrotliBlock.EndBlockBytes.Length);
+                            ms.Position = 0;
+
+                            byte[] decompressed = Brotli.DecompressBuffer(ms.ToArray(), 0, (int)ms.Length, null);
+                            CompareBuffers(original, decompressed, file);
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        throw new Exception("Byte-aligned decompress failed with compressed buffer quality " + quality + " for " + file, e);
+                    }
+                });
             }
         }
 
@@ -183,7 +230,7 @@ namespace BrotliSharpLib.Tests
                 var filePath = Path.Combine(TestdataDir, file);
                 Assert.IsTrue(File.Exists(filePath), "Unable to find the test file: " + file);
 
-                foreach (var quality in CompressQualities)
+                Parallel.ForEach(CompressQualities, quality =>
                 {
                     // Compress using the current quality
                     using (var fs = File.OpenRead(filePath))
@@ -208,7 +255,61 @@ namespace BrotliSharpLib.Tests
                             }
                         }
                     }
-                }
+                });
+            }
+        }
+    
+        [Test, Order(5)]
+        public void CompressByteAligned()
+        {
+            // Run tests on data
+            foreach (var file in CompressTestFiles)
+            {
+                var filePath = Path.Combine(TestdataDir, file);
+                Assert.IsTrue(File.Exists(filePath), "Unable to find the test file: " + file);
+
+                var original = File.ReadAllBytes(filePath);
+
+                Parallel.ForEach(
+                    CompressQualities,
+                    //new ParallelOptions { MaxDegreeOfParallelism = 1 },
+                    quality =>
+                {
+                    // Compress using the current quality
+                    var compressed = Brotli.CompressBuffer(original, 0, original.Length, quality, byteAlign: true);
+
+                    //Decompress and verify with original
+                    try
+                    {
+                        byte[] decompressed = Brotli.DecompressBuffer(compressed, 0, compressed.Length);
+                        CompareBuffers(original, decompressed, file);
+                    }
+                    catch (Exception e)
+                    {
+                        throw new Exception("Decompress failed with compressed buffer quality " + quality + " for " + file, e);
+                    }
+
+                    try
+                    {
+                        if (!BrotliBlock.TryExtractBareByteAlignedMetaBlock(compressed, out byte[] byteAlignedBareBlock))
+                        {
+                            throw new Exception("not byte aligned!");
+                        }
+
+                        var ms = new MemoryStream();
+                        ms.Write(BrotliBlock.StartBlockBytes, 0, BrotliBlock.StartBlockBytes.Length);
+                        ms.Write(byteAlignedBareBlock, 0, byteAlignedBareBlock.Length);
+                        ms.Write(BrotliBlock.EndBlockBytes, 0, BrotliBlock.EndBlockBytes.Length);
+                        ms.Position = 0;
+
+                        byte[] decompressed = Brotli.DecompressBuffer(ms.ToArray(), 0, (int)ms.Length, null);
+                        CompareBuffers(original, decompressed, file);
+                    }
+                    catch (Exception e)
+                    {
+                        throw new Exception("Byte-aligned decompress failed with compressed buffer quality " + quality + " for " + file, e);
+                    }
+                });
             }
         }
     }

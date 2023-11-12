@@ -98,7 +98,7 @@ namespace BrotliSharpLib {
         /// <param name="customDictionary">The custom dictionary that will be passed to the encoder.</param>
         /// <returns></returns>
         public static unsafe byte[] CompressBuffer(byte[] buffer, int offset, int length, int quality = -1,
-            int lgwin = -1, byte[] customDictionary = null) {
+            int lgwin = -1, byte[] customDictionary = null, bool byteAlign = false) {
             if (buffer == null)
                 throw new ArgumentNullException(nameof(buffer));
 
@@ -128,7 +128,7 @@ namespace BrotliSharpLib {
                         BrotliEncoderSetCustomDictionary(ref s, customDictionary.Length, cd);
                 }
 
-                size_t available_in = length;
+                size_t available_in;
                 byte[] out_buf = new byte[0x10000];
                 size_t available_out = out_buf.Length;
                 fixed (byte* o = out_buf)
@@ -137,6 +137,52 @@ namespace BrotliSharpLib {
                     byte* next_out = o;
 
                     bool fail = false;
+
+                    if (byteAlign)
+                    {
+                        // emit (even empty) metadata to byte-align
+                        available_in = 0;
+                        if (!BrotliEncoderCompressStream(ref s, BrotliEncoderOperation.BROTLI_OPERATION_EMIT_METADATA,
+                            &available_in, null, &available_out, &next_out, null))
+                        {
+                            throw new InvalidOperationException("Could not byte align at start.");
+                        }
+                    }
+
+                    available_in = length;
+                    while (true)
+                    {
+                        // Compress stream using inputted buffer
+                        if (!BrotliEncoderCompressStream(ref s, BrotliEncoderOperation.BROTLI_OPERATION_FLUSH,
+                            &available_in, &next_in, &available_out, &next_out, null))
+                        {
+                            fail = true;
+                            break;
+                        }
+
+                        // Write the compressed bytes to the stream
+                        if (available_out != out_buf.Length)
+                        {
+                            size_t out_size = out_buf.Length - available_out;
+                            ms.Write(out_buf, 0, (int)out_size);
+                            available_out = out_buf.Length;
+                            next_out = o;
+                        }
+
+                        // Check that the encoder is finished
+                        if (!BrotliEncoderHasMoreOutput(ref s)) break;
+                    }
+
+                    if (byteAlign)
+                    {
+                        // emit (even empty) metadata to byte-align
+                        available_in = 0;
+                        if (!BrotliEncoderCompressStream(ref s, BrotliEncoderOperation.BROTLI_OPERATION_EMIT_METADATA,
+                            &available_in, null, &available_out, &next_out, null))
+                        {
+                            throw new InvalidOperationException("Could not byte align at end.");
+                        }
+                    }
 
                     while (true) {
                         // Compress stream using inputted buffer

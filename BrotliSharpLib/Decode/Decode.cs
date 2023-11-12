@@ -51,25 +51,6 @@ namespace BrotliSharpLib {
             s.custom_dict_size = (int)size;
         }
 
-        private static unsafe BrotliDecoderResult BrotliDecoderDecompress(
-            size_t encoded_size, byte* encoded_buffer, size_t* decoded_size,
-            byte* decoded_buffer) {
-            var s = BrotliCreateDecoderState();
-            size_t total_out = 0;
-            var available_in = encoded_size;
-            var next_in = encoded_buffer;
-            var available_out = *decoded_size;
-            var next_out = decoded_buffer;
-            BrotliDecoderStateInit(ref s);
-            var result = BrotliDecoderDecompressStream(
-                ref s, &available_in, &next_in, &available_out, &next_out, &total_out);
-            *decoded_size = total_out;
-            BrotliDecoderStateCleanup(ref s);
-            if (result != BrotliDecoderResult.BROTLI_DECODER_RESULT_SUCCESS)
-                result = BrotliDecoderResult.BROTLI_DECODER_RESULT_ERROR;
-            return result;
-        }
-
         /* Saves error code and converts it to BrotliDecoderResult */
         private static BrotliDecoderResult SaveErrorCode(
             ref BrotliDecoderState s, BrotliDecoderErrorCode e) {
