@@ -2191,6 +2191,7 @@ namespace BrotliSharpLib {
                                     break;
                                 }
                             }
+
                             if (result == BrotliDecoderErrorCode.BROTLI_DECODER_SUCCESS) {
                                 s.state = BrotliRunningState.BROTLI_STATE_METABLOCK_DONE;
                             }

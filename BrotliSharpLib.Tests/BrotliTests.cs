@@ -4,6 +4,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -304,6 +305,12 @@ namespace BrotliSharpLib.Tests
 
                         byte[] decompressed = Brotli.DecompressBuffer(ms.ToArray(), 0, (int)ms.Length, null);
                         CompareBuffers(original, decompressed, file);
+
+                        lock (concat_original)
+                        {
+                            concat_original.AddRange(original);
+                            concat_compressed.AddRange(byteAlignedBareBlock);
+                        }
                     }
                     catch (Exception e)
                     {
@@ -311,6 +318,39 @@ namespace BrotliSharpLib.Tests
                     }
                 });
             }
+        }
+
+        [Test, Order(5)]
+        public void CompressByteAlignedConcat()
+        {
+            var concat_original = new List<byte>();
+            var concat_compressed = new List<byte>(BrotliBlock.StartBlockBytes);
+
+            var originals = new List<byte[]>
+            {
+                Enumerable.Repeat((byte)'a', 6).ToArray(),
+                Enumerable.Repeat((byte)'b', 6).ToArray(),
+            };
+
+            // Run tests on data
+            foreach (var original in originals)
+            {
+                // Compress using the current quality
+                var compressed = Brotli.CompressBuffer(original, 0, original.Length, 6, byteAlign: true);
+
+                if (!BrotliBlock.TryExtractBareByteAlignedMetaBlock(compressed, out byte[] byteAlignedBareBlock))
+                {
+                    throw new Exception("not byte aligned!");
+                }
+
+                concat_original.AddRange(original);
+                concat_compressed.AddRange(byteAlignedBareBlock);
+            }
+
+            concat_compressed.AddRange(BrotliBlock.EndBlockBytes);
+
+            byte[] concat_decompressed = Brotli.DecompressBuffer(concat_compressed.ToArray(), 0, concat_compressed.Count);
+            CompareBuffers(concat_original.ToArray(), concat_decompressed, "concat");
         }
     }
 }
